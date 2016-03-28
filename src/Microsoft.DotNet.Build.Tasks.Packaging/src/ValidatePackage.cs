@@ -3,6 +3,9 @@
 // See the LICENSE file in the project root for more information.
 
 using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NuGet.Frameworks;
 using System;
 using System.Collections.Generic;
@@ -116,14 +119,53 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
         }
 
         /// <summary>
+        /// List of frameworks which were validated and determined to be supported
+        ///   Identity: framework short name
+        ///   Framework: framework full name
+        ///   Version: assembly version of API that is supported
+        ///   Inbox: true if assembly is expected to come from targeting pack
+        ///   ValidatedRIDs: all RIDs that were scanned
+        /// </summary>
+        [Output]
+        public ITaskItem[] AllSupportedFrameworks
+        {
+            get;
+            set;
+        }
+
+        /// <summary>
+        /// Which assets were determined to be applicable on supported frameworks.
+        ///   Identity: framework/RID target
+        ///   Compile: relative path to compile asset
+        ///   Runtime: relative path to runtime asset
+        /// </summary>
+        [Output]
+        public ITaskItem[] ApplicableAssets
+        {
+            get;
+            set;
+        }
+
+
+        /// <summary>
+        /// JSON file describing results of validation
+        /// </summary>
+        public string ValidationReport {
+            get;
+            set;
+        }
+
+        /// <summary>
         /// property bag of error suppressions
         /// </summary>
         private Dictionary<Suppression, HashSet<string>> _suppressions;
         private Dictionary<string, List<PackageItem>> _validateFiles;
         private Dictionary<NuGetFramework, ValidationFramework> _frameworks;
+        private FrameworkSet _frameworkSet;
         private AggregateNuGetAssetResolver _resolver;
         private Dictionary<string, PackageItem> _targetPathToPackageItem;
         private string _generationIdentifier = FrameworkConstants.FrameworkIdentifiers.NetStandard;
+        private static Version s_maxVersion = new Version(int.MaxValue, int.MaxValue, int.MaxValue, int.MaxValue);
 
         public override bool Execute()
         {
@@ -177,6 +219,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
         }
         private void ValidateSupport()
         {
+            List<AssetResult> assetResults = new List<AssetResult>();
             // validate support for each TxM:RID
             foreach (var validateFramework in _frameworks.Values)
             {
@@ -186,7 +229,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
                 var compileAssetPaths = _resolver.ResolveCompileAssets(fx, PackageId);
                 bool hasCompileAsset, hasCompilePlaceHolder;
                 ExamineAssets("Compile", ContractName, fx.ToString(), compileAssetPaths, out hasCompileAsset, out hasCompilePlaceHolder);
-
+                
                 // resolve/test for each RID associated with this framework.
                 foreach (string runtimeId in validateFramework.RuntimeIds)
                 {
@@ -195,6 +238,8 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
 
                     bool hasRuntimeAsset, hasRuntimePlaceHolder;
                     ExamineAssets("Runtime", ContractName, target, runtimeAssetPaths, out hasRuntimeAsset, out hasRuntimePlaceHolder);
+
+                    assetResults.Add(new AssetResult(fx, runtimeId, compileAssetPaths, runtimeAssetPaths));
 
                     if (null == supportedVersion)
                     {
@@ -305,6 +350,16 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
                         }
                     }
                 }
+            }
+
+
+            // Set output items
+            AllSupportedFrameworks = _frameworks.Values.Where(fx => fx.SupportedVersion != null).Select(fx => fx.ToItem()).OrderBy(i => i.ItemSpec).ToArray();
+            ApplicableAssets = assetResults.Select(ar => ar.ToItem()).OrderBy(i => i.ItemSpec).ToArray();
+
+            if (!String.IsNullOrEmpty(ValidationReport))
+            {
+                WriteValidationReport(ValidationReport, _frameworks.Values, assetResults);
             }
         }
 
@@ -610,8 +665,8 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
 
 
             // determine which Frameworks should support inbox
-            FrameworkSet inboxFrameworks = FrameworkSet.Load(FrameworkListsPath);
-            foreach (IEnumerable<Framework> inboxFxGroup in inboxFrameworks.Frameworks.Values)
+            _frameworkSet = FrameworkSet.Load(FrameworkListsPath);
+            foreach (IEnumerable<Framework> inboxFxGroup in _frameworkSet.Frameworks.Values)
             {
                 foreach (Framework inboxFx in inboxFxGroup)
                 {
@@ -664,8 +719,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             // their own implementation via a lineup/runtime.json.
 
             // only consider frameworks that support the contract at a specific version
-            Version maxVersion = new Version(int.MaxValue, int.MaxValue, int.MaxValue, int.MaxValue);
-            var portableFrameworks = _frameworks.Values.Where(fx => fx.SupportedVersion != null && fx.SupportedVersion != maxVersion).ToArray();
+            var portableFrameworks = _frameworks.Values.Where(fx => fx.SupportedVersion != null && fx.SupportedVersion != s_maxVersion).ToArray();
 
             var genVersionSuppression = GetSuppressionValues(Suppression.PermitPortableVersionMismatch) ?? new HashSet<string>();
             Dictionary<NuGetFramework, ValidationFramework> generationsToValidate = new Dictionary<NuGetFramework, ValidationFramework>();
@@ -718,6 +772,68 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             }
         }
 
+        private void WriteValidationReport(string reportPath, IEnumerable<ValidationFramework> frameworks, IEnumerable<AssetResult> results)
+        {
+            var fxResults = results.GroupBy(r => r.Framework).ToDictionary(g => g.Key, g=> g.ToArray());
+
+            JObject root = new JObject();
+            // supported frameworks
+            JObject supportedVersions = new JObject();
+            JObject supportedFrameworks = new JObject();
+            JObject unsupportedFrameworks = new JObject();
+            foreach (var framework in frameworks.OrderBy(fx => fx.Name))
+            {
+                var frameworkJObj = framework.ToJObject(GetVersionString);
+
+                JObject assetResults = new JObject();
+                foreach(var assetReult in fxResults[framework.Framework])
+                {
+                    assetResults[assetReult.Name] = assetReult.ToJObject();
+                }
+
+                frameworkJObj["results"] = assetResults;
+
+                var fxList = framework.SupportedVersion == null ? unsupportedFrameworks : supportedFrameworks;
+                fxList[framework.Name] = frameworkJObj;
+
+                if (framework.SupportedVersion != null)
+                {
+                    string version = GetVersionString(framework.SupportedVersion);
+                    JArray supportedVersion = supportedVersions[version] as JArray;
+
+                    if (supportedVersion == null)
+                    {
+                        supportedVersions[version] = supportedVersion = new JArray();
+                    }
+
+                    supportedVersion.Add(framework.Name);
+                }
+            }
+            root["versions"] = supportedVersions;
+            root["supportedFrameworks"] = supportedFrameworks;
+            root["unsupportedFrameworks"] = unsupportedFrameworks;
+
+            string directory = Path.GetDirectoryName(reportPath);
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using (var jsonWriter = new JsonTextWriter(File.CreateText(reportPath)))
+            {
+                jsonWriter.Formatting = Formatting.Indented;
+                jsonWriter.Indentation = 2;
+                root.WriteTo(jsonWriter);
+            }
+
+        }
+
+        private string GetVersionString(Version version)
+        {
+            // normalize to API version
+            return version == s_maxVersion ? "Any" : _frameworkSet.GetApiVersion(ContractName, version)?.ToString();
+        }
+
         private class ValidationFramework
         {
             private static readonly string[] s_nullRidList = new string[] { null };
@@ -733,7 +849,65 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             // if null indicates the contract should not be supported.
             public Version SupportedVersion { get; set; }
             public bool IsInbox { get; set; }
+            public string Name { get { return Framework.GetShortFolderName(); } }
+
+            public ITaskItem ToItem()
+            {
+                ITaskItem item = new TaskItem(Name);
+                item.SetMetadata("Framework", Framework.ToString());
+                item.SetMetadata("Version", SupportedVersion.ToString());
+                item.SetMetadata("Inbox", IsInbox.ToString());
+                item.SetMetadata("ValidatedRIDs", String.Join(";", RuntimeIds));
+                return item;
+            }
+
+            public JObject ToJObject(Func<Version,string> formatVersion = null)
+            {
+                return new JObject()
+                {
+                    { "framework", Framework.ToString() },
+                    { "version", formatVersion(SupportedVersion) },
+                    { "inbox", IsInbox.ToString() },
+                    { "validatedRIDs", new JArray(RuntimeIds) }
+                };
+            }
         }
+
+        private class AssetResult
+        {
+            public AssetResult(NuGetFramework framework, string rid, IEnumerable<string> compileAssets, IEnumerable<string> runtimeAssets)
+            {
+                Framework = framework;
+                RID = rid;
+                CompileAssets = compileAssets.ToArray();
+                RuntimeAssets = runtimeAssets.ToArray();
+            }
+
+
+            public string Name { get { return $"{Framework.ToString()}/{RID}"; } }
+            public NuGetFramework Framework { get; }
+            public string RID { get; }
+            public string[] CompileAssets { get; }
+            public string[] RuntimeAssets { get; }
+
+            public ITaskItem ToItem()
+            {
+                ITaskItem item = new TaskItem(Name);
+                item.SetMetadata("Compile", String.Join(";", CompileAssets));
+                item.SetMetadata("Runtime", String.Join(";", RuntimeAssets));
+                return item;
+            }
+
+            public JObject ToJObject()
+            {
+                return new JObject()
+                {
+                    { "compile" , new JArray(CompileAssets) },
+                    { "runtime" , new JArray(RuntimeAssets) }
+                };
+            }
+        }
+
     }
     public enum Suppression
     {

@@ -66,6 +66,8 @@
     <OutputPath>$(PackageOutputPath)</OutputPath>
     <NuSpecOutputPath Condition="'$(NuSpecOutputPath)' == ''">$(PackageOutputPath)specs/</NuSpecOutputPath>
     <NuSpecPath>$(NuSpecOutputPath)$(Id)$(NuspecSuffix).nuspec</NuSpecPath>
+    <PackageValidationPath Condition="'$(PackageValidationPath)' == ''">$(PackageOutputPath)reports/</PackageValidationPath>
+    <PackageValidationReportPath>$(PackageValidationPath)$(Id)$(NuspecSuffix).json</PackageValidationReportPath>
     <TargetPath>$(NuSpecPath)</TargetPath>
     <RuntimeFilePath Condition="'$(RuntimeFilePath)' == ''">$(NuSpecOutputPath)$(Id)$(NuspecSuffix)/runtime.json</RuntimeFilePath>
     <PlaceholderFile>$(MSBuildThisFileDirectory)_._</PlaceholderFile>
@@ -855,6 +857,7 @@
                      SkipSupportCheck="$(SkipSupportCheck)"
                      SuppressionFile="$(ValidationSuppressionFile)"
                      UseNetPlatform="$(UseNetPlatform)"
+                     ValidationReport="$(PackageValidationReportPath)"
                      ContinueOnError="ErrorAndContinue"/>
   </Target>
 
