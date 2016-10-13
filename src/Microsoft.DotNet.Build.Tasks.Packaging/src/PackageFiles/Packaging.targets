@@ -249,13 +249,8 @@
     <ExcludeReferenceAssets Condition="'$(ExcludeReferenceAssets)' == '' AND '$(PackageTargetRuntime)' != ''">true</ExcludeReferenceAssets>
   </PropertyGroup>
 
-  <!-- We define a custom target: GetFilesToPackage which does a minimal build of the project
-       and passes all information in a single item group.
-       This helps minimize the number of project evaluations and targets that build in order
-       to determine the contents of the package-->
-  <Target Name="ExpandProjectReferences"
+  <Target Name="BuildProjectReferences"
           DependsOnTargets="SplitProjectReferences">
-
     <!-- Only rebuild project references when specified -->
     <MSBuild Targets="Build"
              BuildInParallel="$(BuildInParallel)"
@@ -263,6 +258,14 @@
              Projects="@(_NonPkgProjProjectReference)"
              Properties="$(ProjectProperties)"
              ContinueOnError="WarnAndContinue"/>
+  </Target>
+
+  <!-- We define a custom target: GetFilesToPackage which does a minimal build of the project
+       and passes all information in a single item group.
+       This helps minimize the number of project evaluations and targets that build in order
+       to determine the contents of the package-->
+  <Target Name="ExpandProjectReferences"
+          DependsOnTargets="SplitProjectReferences">
 
     <MSBuild Targets="GetFilesToPackage"
              BuildInParallel="$(BuildInParallel)"
@@ -480,7 +483,7 @@
       <SupportedFramework Include="@(_HarvestedSupportedFramework)" Exclude="@(NotSupportedOnTargetFramework)" />
     </ItemGroup>
   </Target>
-
+  
   <Target Name="GetFiles"
           Returns="@(File)"
           DependsOnTargets="ConvertItems;HarvestStablePackage" />
@@ -595,7 +598,7 @@
        Assume version of package dependency == assembly version of dependency (3-part).
        For prerelease (not stable) packages apply a pre-release suffix to the dependency -->
   <Target Name="GetFilePackageReferences"
-          DependsOnTargets="GetFiles"
+          DependsOnTargets="GetFiles;BuildProjectReferences"
           Condition="'$(OmitDependencies)' != 'true'"
           Inputs="%(File.Identity);%(File.TargetFramework)"
           Outputs="fake">
