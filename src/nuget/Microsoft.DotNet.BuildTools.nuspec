@@ -33,6 +33,7 @@
     <file src="GenFacades.Core\GenFacades.Core.dll" target="lib" />
     <file src="GenAPI\GenAPI.exe" target="lib" />
     <file src="ApiCompat\ApiCompat.exe" target="lib" />
+    <file src="ILLink\*.*" target="lib\ILLink" />
     <file src="Microsoft.DotNet.CodeAnalysis\Microsoft.DotNet.CodeAnalysis.dll" target="lib\analyzers" />
     <file src="Microsoft.DotNet.CodeAnalysis.net45\Microsoft.DotNet.CodeAnalysis.dll" target="lib\net46\analyzers" />
     <file src="Microsoft.DotNet.CodeAnalysis\PackageFiles\**\*.*" target="lib" />
